@@ -178,3 +178,24 @@ fn get_text(event: XmlEvent) -> Option<String> {
         _ => None,
     }
 }
+
+#[macro_export]
+macro_rules! nuget_packages {
+    ( $( { $name:literal , $version:literal } ),* $(,)* ) => (
+        {
+            let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            let packages_dir = {
+                let mut packages_dir = manifest_dir.to_owned();
+                packages_dir.push("packages");
+                packages_dir
+            };
+
+            let download_packages = || -> std::result::Result<Vec<std::fs::File>, Box<dyn std::error::Error>> {
+                let mut files = Vec::new();
+                $( files.push(nuget_dl::download_package($name, $version, &packages_dir)?); )*
+                Ok(files)
+            };
+            download_packages()
+        }
+    )
+}
