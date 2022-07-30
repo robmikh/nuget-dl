@@ -1,9 +1,11 @@
 use std::{
+    collections::HashMap,
     fs::File,
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
+use serde::Deserialize;
 use sha2::{Digest, Sha512};
 use xml::{reader::XmlEvent, EventReader};
 
@@ -198,4 +200,42 @@ macro_rules! nuget_packages {
             download_packages()
         }
     )
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct NugetConfig {
+    packages_dir: Option<PathBuf>,
+    dependencies: HashMap<String, NugetPackageRef>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum NugetPackageRef {
+    Version(String),
+}
+
+pub fn process_nuget<P: AsRef<Path>>(
+    config_path: P,
+) -> Result<Vec<File>, Box<dyn std::error::Error>> {
+    let config_text = std::fs::read_to_string(config_path)?;
+    let config: NugetConfig = toml::from_str(&config_text)?;
+
+    let packages_dir = if let Some(packages_dir) = config.packages_dir {
+        packages_dir
+    } else {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut packages_dir = manifest_dir.to_owned();
+        packages_dir.push("packages");
+        packages_dir
+    };
+
+    let mut files = Vec::new();
+    for (name, package_ref) in config.dependencies {
+        let file = match package_ref {
+            NugetPackageRef::Version(version) => download_package(&name, &version, &packages_dir)?,
+        };
+        files.push(file);
+    }
+    Ok(files)
 }
