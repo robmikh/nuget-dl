@@ -59,7 +59,8 @@ pub fn download_package<P: AsRef<Path>>(
 
     // First check if the file is already there
     let matches = if path.exists() {
-        package_matches_hash(package_name, version, &path)?
+        // Treat any failures as a failing match
+        package_matches_hash(package_name, version, &path).unwrap_or(false)
     } else {
         false
     };
