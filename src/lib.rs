@@ -9,6 +9,11 @@ use serde::Deserialize;
 use sha2::{Digest, Sha512};
 use xml::{reader::XmlEvent, EventReader};
 
+pub struct NugetPackageFile {
+    pub stem: String,
+    pub file: File,
+}
+
 pub fn download_package_bytes(
     package_name: &str,
     version: &str,
@@ -26,7 +31,7 @@ pub fn download_package_overwrite<P: AsRef<Path>>(
     package_name: &str,
     version: &str,
     download_dir: P,
-) -> Result<File, Box<dyn std::error::Error>> {
+) -> Result<NugetPackageFile, Box<dyn std::error::Error>> {
     let download_dir = download_dir.as_ref();
     let bytes = download_package_bytes(package_name, version)?;
     std::fs::create_dir_all(download_dir)?;
@@ -41,14 +46,17 @@ pub fn download_package_overwrite<P: AsRef<Path>>(
         file.write_all(&bytes)?;
         file
     };
-    Ok(file)
+    Ok(NugetPackageFile {
+        stem: get_package_file_stem(package_name, version),
+        file,
+    })
 }
 
 pub fn download_package<P: AsRef<Path>>(
     package_name: &str,
     version: &str,
     download_dir: P,
-) -> Result<File, Box<dyn std::error::Error>> {
+) -> Result<NugetPackageFile, Box<dyn std::error::Error>> {
     let download_dir = download_dir.as_ref();
 
     // Get the download file path
@@ -58,6 +66,7 @@ pub fn download_package<P: AsRef<Path>>(
         path.push(package_file_name);
         path
     };
+    println!("{:?}", path);
 
     // First check if the file is already there
     let matches = if path.exists() {
@@ -70,9 +79,17 @@ pub fn download_package<P: AsRef<Path>>(
     let file = if !matches {
         download_package_overwrite(package_name, version, download_dir)?
     } else {
-        File::open(&path)?
+        let stem = get_package_file_stem(package_name, version);
+        NugetPackageFile {
+            stem,
+            file: File::open(&path)?,
+        }
     };
     Ok(file)
+}
+
+fn get_package_file_stem(package_name: &str, version: &str) -> String {
+    format!("{package_name}.{version}")
 }
 
 fn get_package_file_name(package_name: &str, version: &str) -> String {
@@ -140,7 +157,9 @@ pub fn get_package_hash(
 ) -> Result<PackageHash, Box<dyn std::error::Error>> {
     let url =
         format!("https://www.nuget.org/api/v2/Packages(Id='{package_name}',Version='{version}')");
+    println!("{:#?}", url);
     let text = reqwest::blocking::get(url)?.text()?;
+    println!("{:#?}", text);
 
     let parser = EventReader::from_str(&text);
     let mut event_iter = parser.into_iter();
@@ -192,7 +211,7 @@ macro_rules! nuget_packages {
                 packages_dir
             };
 
-            let download_packages = || -> std::result::Result<Vec<std::fs::File>, Box<dyn std::error::Error>> {
+            let download_packages = || -> std::result::Result<Vec<nuget_dl::NugetPackageFile>, Box<dyn std::error::Error>> {
                 let mut files = Vec::new();
                 $( files.push(nuget_dl::download_package($name, $version, &packages_dir)?); )*
                 Ok(files)
@@ -215,19 +234,24 @@ enum NugetPackageRef {
     Version(String),
 }
 
+fn get_default_package_dir() -> PathBuf {
+    let temp = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let manifest_dir = std::path::Path::new(&temp);
+    let mut packages_dir = manifest_dir.to_owned();
+    packages_dir.push("packages");
+    packages_dir
+}
+
 pub fn process_nuget<P: AsRef<Path>>(
     config_path: P,
-) -> Result<Vec<File>, Box<dyn std::error::Error>> {
+) -> Result<Vec<NugetPackageFile>, Box<dyn std::error::Error>> {
     let config_text = std::fs::read_to_string(config_path)?;
     let config: NugetConfig = toml::from_str(&config_text)?;
 
     let packages_dir = if let Some(packages_dir) = config.packages_dir {
         packages_dir
     } else {
-        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let mut packages_dir = manifest_dir.to_owned();
-        packages_dir.push("packages");
-        packages_dir
+        get_default_package_dir()
     };
 
     let mut files = Vec::new();
@@ -238,4 +262,31 @@ pub fn process_nuget<P: AsRef<Path>>(
         files.push(file);
     }
     Ok(files)
+}
+
+pub fn unpack_nuget_file(file: &NugetPackageFile) -> Result<(), Box<dyn std::error::Error>> {
+    let package_dir = { get_default_package_dir() };
+
+    unpack_nuget_file_to_dir(file, package_dir)
+}
+
+pub fn unpack_nuget_file_to_dir<P: AsRef<Path>>(
+    file: &NugetPackageFile,
+    package_dir: P,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let package_dir = package_dir.as_ref();
+
+    let unpacked_dir = {
+        let mut path = package_dir.to_owned();
+        path.push(&file.stem);
+        path
+    };
+    if !unpacked_dir.exists() {
+        std::fs::create_dir(&unpacked_dir)?;
+    }
+
+    let mut archive = zip::ZipArchive::new(&file.file).unwrap();
+    archive.extract(unpacked_dir)?;
+
+    Ok(())
 }
